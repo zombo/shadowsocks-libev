@@ -362,16 +362,27 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         char atyp = server->buf[offset++];
         char host[256] = { 0 };
         char port[64] = { 0 };
+        struct addrinfo info;
+        struct sockaddr_in addr;
 
         // get remote addr and port
         if (atyp == 1) {
             // IP V4
             size_t in_addr_len = sizeof(struct in_addr);
+            bzero(&addr, sizeof(struct sockaddr_in));
+            addr.sin_family = AF_INET;
+            addr.sin_addr = *(struct in_addr *)(server->buf + offset);
             if (r > in_addr_len) {
                 inet_ntop(AF_INET, (const void *)(server->buf + offset),
                           host, INET_ADDRSTRLEN);
                 offset += in_addr_len;
             }
+            addr.sin_port = *(uint16_t *)(server->buf + offset);
+            info.ai_family = AF_INET;
+            info.ai_socktype = SOCK_STREAM;
+            info.ai_protocol = IPPROTO_TCP;
+            info.ai_addrlen = sizeof(struct sockaddr_in);
+            info.ai_addr = (struct sockaddr *)&addr;
         } else if (atyp == 3) {
             // Domain name
             uint8_t name_len = *(uint8_t *)(server->buf + offset);
@@ -382,11 +393,21 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         } else if (atyp == 4) {
             // IP V6
             size_t in6_addr_len = sizeof(struct in6_addr);
+            struct sockaddr_in6 addr;
+            bzero(&addr, sizeof(struct sockaddr_in6));
+            addr.sin6_family = AF_INET6;
+            addr.sin6_addr = *(struct in6_addr *)(server->buf + offset);
             if (r > in6_addr_len) {
                 inet_ntop(AF_INET6, (const void *)(server->buf + offset),
                           host, INET6_ADDRSTRLEN);
                 offset += in6_addr_len;
             }
+            addr.sin6_port = *(uint16_t *)(server->buf + offset);
+            info.ai_family = AF_INET;
+            info.ai_socktype = SOCK_STREAM;
+            info.ai_protocol = IPPROTO_TCP;
+            info.ai_addrlen = sizeof(struct sockaddr_in);
+            info.ai_addr = (struct sockaddr *)&addr;
         }
 
         if (offset == 1) {
@@ -404,33 +425,60 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             LOGD("connect to: %s:%s", host, port);
         }
 
-        struct addrinfo hints;
-        asyncns_query_t *query;
-        memset(&hints, 0, sizeof hints);
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-
-        query = asyncns_getaddrinfo(server->listen_ctx->asyncns,
-                                    host, port, &hints);
-
-        if (query == NULL) {
-            ERROR("asyncns_getaddrinfo");
-            close_and_free_server(EV_A_ server);
-            return;
-        }
-
-        asyncns_setuserdata(server->listen_ctx->asyncns, query, server);
-
         // XXX: should handle buffer carefully
         if (r > offset) {
             server->buf_len = r - offset;
             server->buf_idx = offset;
         }
 
-        server->stage = 4;
-        server->query = query;
+        if (atyp == 1 || atyp == 4) {
+            struct remote *remote = connect_to_remote(&info, server);
 
-        ev_io_stop(EV_A_ & server_recv_ctx->io);
+            if (remote == NULL) {
+                LOGE("connect error.");
+                close_and_free_server(EV_A_ server);
+                return;
+            } else {
+                server->remote = remote;
+                remote->server = server;
+
+                // XXX: should handle buffer carefully
+                if (server->buf_len > 0) {
+                    memcpy(remote->buf, server->buf + server->buf_idx,
+                            server->buf_len);
+                    remote->buf_len = server->buf_len;
+                    remote->buf_idx = 0;
+                    server->buf_len = 0;
+                    server->buf_idx = 0;
+                }
+
+                // listen to remote connected event
+                ev_io_stop(EV_A_ & server_recv_ctx->io);
+                ev_io_start(EV_A_ & remote->send_ctx->io);
+            }
+        } else {
+            struct addrinfo hints;
+            asyncns_query_t *query;
+            memset(&hints, 0, sizeof hints);
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_socktype = SOCK_STREAM;
+
+            query = asyncns_getaddrinfo(server->listen_ctx->asyncns,
+                    host, port, &hints);
+
+            if (query == NULL) {
+                ERROR("asyncns_getaddrinfo");
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+
+            asyncns_setuserdata(server->listen_ctx->asyncns, query, server);
+
+            server->stage = 4;
+            server->query = query;
+
+            ev_io_stop(EV_A_ & server_recv_ctx->io);
+        }
 
         return;
     }
@@ -564,7 +612,7 @@ static void server_resolve_cb(EV_P_ ev_io *w, int revents)
             server->remote = remote;
             remote->server = server;
 
-            // XXX: should handel buffer carefully
+            // XXX: should handle buffer carefully
             if (server->buf_len > 0) {
                 memcpy(remote->buf, server->buf + server->buf_idx,
                        server->buf_len);
