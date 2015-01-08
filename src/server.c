@@ -403,7 +403,7 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 offset += in6_addr_len;
             }
             addr.sin6_port = *(uint16_t *)(server->buf + offset);
-            info.ai_family = AF_INET;
+            info.ai_family = AF_INET6;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
             info.ai_addrlen = sizeof(struct sockaddr_in);
