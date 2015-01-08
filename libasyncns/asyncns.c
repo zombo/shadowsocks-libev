@@ -59,7 +59,7 @@
 #endif
 
 #define MAX_WORKERS 16
-#define MAX_QUERIES 256
+#define MAX_QUERIES 2048
 #define BUFSIZE (10240)
 
 typedef enum {
