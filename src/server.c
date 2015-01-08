@@ -376,6 +376,10 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 inet_ntop(AF_INET, (const void *)(server->buf + offset),
                           host, INET_ADDRSTRLEN);
                 offset += in_addr_len;
+            } else {
+                LOGE("invalid header with addr type %d", atyp);
+                close_and_free_server(EV_A_ server);
+                return;
             }
             addr.sin_port = *(uint16_t *)(server->buf + offset);
             info.ai_family = AF_INET;
@@ -401,12 +405,16 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 inet_ntop(AF_INET6, (const void *)(server->buf + offset),
                           host, INET6_ADDRSTRLEN);
                 offset += in6_addr_len;
+            } else {
+                LOGE("invalid header with addr type %d", atyp);
+                close_and_free_server(EV_A_ server);
+                return;
             }
             addr.sin6_port = *(uint16_t *)(server->buf + offset);
             info.ai_family = AF_INET6;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
-            info.ai_addrlen = sizeof(struct sockaddr_in);
+            info.ai_addrlen = sizeof(struct sockaddr_in6);
             info.ai_addr = (struct sockaddr *)&addr;
         }
 
