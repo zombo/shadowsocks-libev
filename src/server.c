@@ -70,11 +70,10 @@
 
 static void signal_cb(EV_P_ ev_signal *w, int revents);
 static void accept_cb(EV_P_ ev_io *w, int revents);
-static void server_recv_cb(EV_P_ ev_io *w, int revents);
 static void server_send_cb(EV_P_ ev_io *w, int revents);
+static void server_recv_cb(EV_P_ ev_io *w, int revents);
 static void remote_recv_cb(EV_P_ ev_io *w, int revents);
 static void remote_send_cb(EV_P_ ev_io *w, int revents);
-static void server_resolve_cb(EV_P_ ev_io *w, int revents);
 static void server_timeout_cb(EV_P_ ev_timer *watcher, int revents);
 
 static struct remote * new_remote(int fd);
@@ -86,6 +85,8 @@ static void free_remote(struct remote *remote);
 static void close_and_free_remote(EV_P_ struct remote *remote);
 static void free_server(struct server *server);
 static void close_and_free_server(EV_P_ struct server *server);
+
+static void server_resolve_cb(struct sockaddr *addr, void *data);
 
 int verbose = 0;
 int udprelay = 0;
@@ -361,17 +362,33 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         int offset = 0;
         char atyp = server->buf[offset++];
         char host[256] = { 0 };
-        char port[64] = { 0 };
+        uint16_t port = 0;
+        struct addrinfo info;
+        struct sockaddr_storage storage;
+        bzero(&storage, sizeof(struct sockaddr_storage));
 
         // get remote addr and port
         if (atyp == 1) {
             // IP V4
+            struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
             size_t in_addr_len = sizeof(struct in_addr);
+            addr->sin_family = AF_INET;
             if (r > in_addr_len) {
+                addr->sin_addr = *(struct in_addr *)(server->buf + offset);
                 inet_ntop(AF_INET, (const void *)(server->buf + offset),
                           host, INET_ADDRSTRLEN);
                 offset += in_addr_len;
+            } else {
+                LOGE("invalid header with addr type %d", atyp);
+                close_and_free_server(EV_A_ server);
+                return;
             }
+            addr->sin_port = *(uint16_t *)(server->buf + offset);
+            info.ai_family = AF_INET;
+            info.ai_socktype = SOCK_STREAM;
+            info.ai_protocol = IPPROTO_TCP;
+            info.ai_addrlen = sizeof(struct sockaddr_in);
+            info.ai_addr = (struct sockaddr *)addr;
         } else if (atyp == 3) {
             // Domain name
             uint8_t name_len = *(uint8_t *)(server->buf + offset);
@@ -381,12 +398,25 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         } else if (atyp == 4) {
             // IP V6
+            struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&storage;
             size_t in6_addr_len = sizeof(struct in6_addr);
+            addr->sin6_family = AF_INET6;
             if (r > in6_addr_len) {
+                addr->sin6_addr = *(struct in6_addr *)(server->buf + offset);
                 inet_ntop(AF_INET6, (const void *)(server->buf + offset),
                           host, INET6_ADDRSTRLEN);
                 offset += in6_addr_len;
+            } else {
+                LOGE("invalid header with addr type %d", atyp);
+                close_and_free_server(EV_A_ server);
+                return;
             }
+            addr->sin6_port = *(uint16_t *)(server->buf + offset);
+            info.ai_family = AF_INET6;
+            info.ai_socktype = SOCK_STREAM;
+            info.ai_protocol = IPPROTO_TCP;
+            info.ai_addrlen = sizeof(struct sockaddr_in6);
+            info.ai_addr = (struct sockaddr *)addr;
         }
 
         if (offset == 1) {
@@ -395,31 +425,13 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
-        sprintf(port, "%d",
-                ntohs(*(uint16_t *)(server->buf + offset)));
+        port = (*(uint16_t *)(server->buf + offset));
 
         offset += 2;
 
         if (verbose) {
-            LOGD("connect to: %s:%s", host, port);
+            LOGD("connect to: %s:%d", host, ntohs(port));
         }
-
-        struct addrinfo hints;
-        asyncns_query_t *query;
-        memset(&hints, 0, sizeof hints);
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-
-        query = asyncns_getaddrinfo(server->listen_ctx->asyncns,
-                                    host, port, &hints);
-
-        if (query == NULL) {
-            ERROR("asyncns_getaddrinfo");
-            close_and_free_server(EV_A_ server);
-            return;
-        }
-
-        asyncns_setuserdata(server->listen_ctx->asyncns, query, server);
 
         // XXX: should handle buffer carefully
         if (r > offset) {
@@ -427,10 +439,39 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             server->buf_idx = offset;
         }
 
-        server->stage = 4;
-        server->query = query;
+        if (atyp == 1 || atyp == 4) {
+            struct remote *remote = connect_to_remote(&info, server);
 
-        ev_io_stop(EV_A_ & server_recv_ctx->io);
+            if (remote == NULL) {
+                LOGE("connect error.");
+                close_and_free_server(EV_A_ server);
+                return;
+            } else {
+                server->remote = remote;
+                remote->server = server;
+
+                // XXX: should handle buffer carefully
+                if (server->buf_len > 0) {
+                    memcpy(remote->buf, server->buf + server->buf_idx,
+                            server->buf_len);
+                    remote->buf_len = server->buf_len;
+                    remote->buf_idx = 0;
+                    server->buf_len = 0;
+                    server->buf_idx = 0;
+                }
+
+                server->stage = 4;
+
+                // listen to remote connected event
+                ev_io_stop(EV_A_ & server_recv_ctx->io);
+                ev_io_start(EV_A_ & remote->send_ctx->io);
+            }
+        } else {
+            server->stage = 4;
+            server->query = resolv_query(host, server_resolve_cb, NULL, server, port);
+
+            ev_io_stop(EV_A_ & server_recv_ctx->io);
+        }
 
         return;
     }
@@ -507,55 +548,35 @@ static void server_timeout_cb(EV_P_ ev_timer *watcher, int revents)
     close_and_free_server(EV_A_ server);
 }
 
-static void server_resolve_cb(EV_P_ ev_io *w, int revents)
+static void server_resolve_cb(struct sockaddr *addr, void *data)
 {
-    int err;
-    struct addrinfo *result, *rp;
-    struct listen_ctx *listen_ctx = (struct listen_ctx *)w;
-    asyncns_t *asyncns = listen_ctx->asyncns;
-
-    err = asyncns_handle(asyncns);
-    if (err == ASYNCNS_HANDLE_AGAIN) {
-        // try again
-        return;
-    } else if (err == ASYNCNS_HANDLE_ERROR) {
-        // asyncns error
-        FATAL("asyncns exit unexpectedly.");
-    }
-
-    asyncns_query_t *query = asyncns_getnext(asyncns);
-    struct server *server =
-        (struct server *)asyncns_getuserdata(asyncns, query);
-
-    if (!asyncns_isdone(asyncns, query)) {
-        // wait for reolver
-        return;
-    }
+    struct server *server = (struct server*)data;
+    struct ev_loop *loop = server->listen_ctx->loop;
 
     server->query = NULL;
 
     if (verbose) {
-        LOGD("asyncns resolved.");
+        LOGD("udns resolved.");
     }
 
-    err = asyncns_getaddrinfo_done(asyncns, query, &result);
-
-    if (err) {
-        ERROR("getaddrinfo");
+    if (addr == NULL) {
+        LOGE("unable to resolve.");
         close_and_free_server(EV_A_ server);
     } else {
-        // Use IPV4 address if possible
-        for (rp = result; rp != NULL; rp = rp->ai_next) {
-            if (rp->ai_family == AF_INET) {
-                break;
-            }
+        struct addrinfo info;
+        info.ai_socktype = SOCK_STREAM;
+        info.ai_protocol = IPPROTO_TCP;
+        info.ai_addr = addr;
+
+        if (addr->sa_family == AF_INET) {
+            info.ai_family = AF_INET;
+            info.ai_addrlen = sizeof(struct sockaddr_in);
+        } else if (addr->sa_family == AF_INET6) {
+            info.ai_family = AF_INET6;
+            info.ai_addrlen = sizeof(struct sockaddr_in6);
         }
 
-        if (rp == NULL) {
-            rp = result;
-        }
-
-        struct remote *remote = connect_to_remote(rp, server);
+        struct remote *remote = connect_to_remote(&info, server);
 
         if (remote == NULL) {
             LOGE("connect error.");
@@ -564,7 +585,7 @@ static void server_resolve_cb(EV_P_ ev_io *w, int revents)
             server->remote = remote;
             remote->server = server;
 
-            // XXX: should handel buffer carefully
+            // XXX: should handle buffer carefully
             if (server->buf_len > 0) {
                 memcpy(remote->buf, server->buf + server->buf_idx,
                        server->buf_len);
@@ -578,9 +599,6 @@ static void server_resolve_cb(EV_P_ ev_io *w, int revents)
             ev_io_start(EV_A_ & remote->send_ctx->io);
         }
     }
-
-    // release addrinfo
-    asyncns_freeaddrinfo(result);
 }
 
 static void remote_recv_cb(EV_P_ ev_io *w, int revents)
@@ -859,7 +877,7 @@ static void close_and_free_server(EV_P_ struct server *server)
 {
     if (server != NULL) {
         if (server->query != NULL) {
-            asyncns_cancel(server->listen_ctx->asyncns, server->query);
+            resolv_cancel(server->query);
             server->query = NULL;
         }
         ev_io_stop(EV_A_ & server->send_ctx->io);
@@ -926,7 +944,9 @@ int main(int argc, char **argv)
     const char *server_host[MAX_REMOTE_NUM];
     const char *server_port = NULL;
 
-    int dns_thread_num = DNS_THREAD_NUM;
+    char *nameservers[MAX_DNS_NUM];
+    int nameserver_num = 1;
+    nameservers[0] = "8.8.8.8";
 
     int option_index = 0;
     static struct option long_options[] =
@@ -971,10 +991,7 @@ int main(int argc, char **argv)
             iface = optarg;
             break;
         case 'd':
-            dns_thread_num = atoi(optarg);
-            if (!dns_thread_num) {
-                FATAL("Invalid DNS thread number");
-            }
+            nameservers[nameserver_num++] = optarg;
             break;
         case 'a':
             user = optarg;
@@ -1069,12 +1086,6 @@ int main(int argc, char **argv)
     ev_signal_start(EV_DEFAULT, &sigint_watcher);
     ev_signal_start(EV_DEFAULT, &sigterm_watcher);
 
-    // setup asyncns
-    asyncns_t *asyncns;
-    if (!(asyncns = asyncns_new(dns_thread_num))) {
-        FATAL("asyncns failed");
-    }
-
     // setup keys
     LOGD("initialize ciphers... %s", method);
     int m = enc_init(password, method);
@@ -1082,12 +1093,15 @@ int main(int argc, char **argv)
     // inilitialize ev loop
     struct ev_loop *loop = EV_DEFAULT;
 
+    // setup udns
+    resolv_init(loop, nameservers, NULL);
+
     // inilitialize listen context
-    struct listen_ctx listen_ctx_list[server_num + 1];
+    struct listen_ctx listen_ctx_list[server_num];
 
     // bind to each interface
     while (server_num > 0) {
-        int index = --server_num;
+        int index = server_num--;
         const char * host = server_host[index];
 
         // Bind to port
@@ -1106,31 +1120,20 @@ int main(int argc, char **argv)
 
         // Setup proxy context
         listen_ctx->timeout = atoi(timeout);
-        listen_ctx->asyncns = asyncns;
         listen_ctx->fd = listenfd;
         listen_ctx->method = m;
         listen_ctx->iface = iface;
+        listen_ctx->loop = loop;
 
         ev_io_init(&listen_ctx->io, accept_cb, listenfd, EV_READ);
         ev_io_start(loop, &listen_ctx->io);
     }
 
-    // initialize the DNS
-    struct listen_ctx *listen_ctx = &listen_ctx_list[0];
-    int asyncnsfd = asyncns_fd(asyncns);
-    listen_ctx->timeout = atoi(timeout);
-    listen_ctx->asyncns = asyncns;
-    listen_ctx->fd = asyncnsfd;
-    listen_ctx->method = m;
-    listen_ctx->iface = iface;
-    ev_io_init(&listen_ctx->io, server_resolve_cb, asyncnsfd, EV_READ);
-    ev_io_start(loop, &listen_ctx->io);
-
     // Setup UDP
     if (udprelay) {
         LOGD("udprelay enabled.");
-        init_udprelay(server_host[0], server_port, dns_thread_num, m,
-                      listen_ctx->timeout, iface);
+        init_udprelay(server_host[0], server_port, m, atoi(timeout),
+                iface);
     }
 
     // setuid
@@ -1149,13 +1152,8 @@ int main(int argc, char **argv)
     }
 
     // Clean up
-    listen_ctx = &listen_ctx_list[0];
-    ev_io_stop(loop, &listen_ctx->io);
-    asyncns_free(listen_ctx->asyncns);
-    close(listen_ctx->fd);
-
-    for (int i = 1; i <= server_num; i++) {
-        listen_ctx = &listen_ctx_list[i];
+    for (int i = 0; i <= server_num; i++) {
+        struct listen_ctx *listen_ctx = &listen_ctx_list[i];
         ev_io_stop(loop, &listen_ctx->io);
         close(listen_ctx->fd);
     }
