@@ -32,8 +32,10 @@
 #include <netinet/in.h>
 #include <ev.h>
 #include <errno.h>
+#include <udns.h>
+
 #include "resolv.h"
-#include "logger.h"
+#include "utils.h"
 
 
 /*
@@ -57,8 +59,7 @@ static const int MODE_IPV4_ONLY = 0;
 static const int MODE_IPV6_ONLY = 1;
 static const int MODE_IPV4_FIRST = 2;
 static const int MODE_IPV6_FIRST = 3;
-static int resolv_mode = MODE_IPV6_FIRST;
-
+static int resolv_mode = 0;
 
 static void resolv_sock_cb(struct ev_loop *, struct ev_io *, int);
 static void resolv_timeout_cb(struct ev_loop *, struct ev_timer *, int);
@@ -71,9 +72,10 @@ static struct sockaddr *choose_ipv4_first(struct ResolvQuery *);
 static struct sockaddr *choose_ipv6_first(struct ResolvQuery *);
 static struct sockaddr *choose_any(struct ResolvQuery *);
 
-
 int
 resolv_init(struct ev_loop *loop, char **nameservers, char **search) {
+    resolv_mode = MODE_IPV4_FIRST;
+
     struct dns_ctx *ctx = &dns_defctx;
     if (nameservers == NULL) {
         /* Nameservers not specified, use system resolver config */
@@ -91,8 +93,7 @@ resolv_init(struct ev_loop *loop, char **nameservers, char **search) {
 
     int sockfd = dns_open(ctx);
     if (sockfd < 0)
-        fatal("Failed to open DNS resolver socket: %s",
-                strerror(errno));
+        FATAL("Failed to open DNS resolver socket");
 
     int flags = fcntl(sockfd, F_GETFL, 0);
     fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
@@ -133,7 +134,7 @@ resolv_query(const char *hostname, void (*client_cb)(struct sockaddr *, void *),
      */
     struct ResolvQuery *cb_data = malloc(sizeof(struct ResolvQuery));
     if (cb_data == NULL) {
-        err("Failed to allocate memory for DNS query callback data.");
+        LOGE("Failed to allocate memory for DNS query callback data.");
         return NULL;
     }
     cb_data->client_cb = client_cb;
@@ -150,7 +151,7 @@ resolv_query(const char *hostname, void (*client_cb)(struct sockaddr *, void *),
                 hostname, 0,
                 dns_query_v4_cb, cb_data);
         if (cb_data->queries[0] == NULL)
-            err("Failed to submit DNS query: %s", dns_strerror(dns_status(ctx)));
+            LOGE("Failed to submit DNS query: %s", dns_strerror(dns_status(ctx)));
     };
 
     if (resolv_mode != MODE_IPV4_ONLY) {
@@ -158,7 +159,7 @@ resolv_query(const char *hostname, void (*client_cb)(struct sockaddr *, void *),
                 hostname, 0,
                 dns_query_v6_cb, cb_data);
         if (cb_data->queries[1] == NULL)
-            err("Failed to submit DNS query: %s", dns_strerror(dns_status(ctx)));
+            LOGE("Failed to submit DNS query: %s", dns_strerror(dns_status(ctx)));
     }
 
     if (all_queries_are_null(cb_data)) {
@@ -209,27 +210,25 @@ dns_query_v4_cb(struct dns_ctx *ctx, struct dns_rr_a4 *result, void *data) {
     struct ResolvQuery *cb_data = (struct ResolvQuery *)data;
 
     if (result == NULL) {
-        info("resolv: %s\n", dns_strerror(dns_status(ctx)));
+        LOGD("resolv: %s\n", dns_strerror(dns_status(ctx)));
     } else if (result->dnsa4_nrr > 0) {
         struct sockaddr **new_responses = realloc(cb_data->responses,
                 (cb_data->response_count + result->dnsa4_nrr) *
                     sizeof(struct sockaddr *));
         if (new_responses == NULL) {
-            err("Failed to allocate memory for additional DNS responses");
+            LOGE("Failed to allocate memory for additional DNS responses");
         } else {
             cb_data->responses = new_responses;
 
             for (int i = 0; i < result->dnsa4_nrr; i++) {
-                struct sockaddr_in sa = {
-                    .sin_family = AF_INET,
-                    .sin_port = cb_data->port,
-                    .sin_addr = result->dnsa4_addr[i],
-                };
+                struct sockaddr_in *sa = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+                sa->sin_family = AF_INET;
+                sa->sin_port = cb_data->port;
+                sa->sin_addr = result->dnsa4_addr[i];
 
-                cb_data ->responses[cb_data->response_count] =
-                    *(struct sockaddr &)&sa;
+                cb_data ->responses[cb_data->response_count] = (struct sockaddr *)sa;
                 if (cb_data->responses[cb_data->response_count] == NULL)
-                    err("Failed to allocate memory for DNS query result address");
+                    LOGE("Failed to allocate memory for DNS query result address");
                 else
                     cb_data->response_count++;
             }
@@ -249,27 +248,25 @@ dns_query_v6_cb(struct dns_ctx *ctx, struct dns_rr_a6 *result, void *data) {
     struct ResolvQuery *cb_data = (struct ResolvQuery *)data;
 
     if (result == NULL) {
-        info("resolv: %s\n", dns_strerror(dns_status(ctx)));
+        LOGD("resolv: %s\n", dns_strerror(dns_status(ctx)));
     } else if (result->dnsa6_nrr > 0) {
         struct sockaddr **new_responses = realloc(cb_data->responses,
                 (cb_data->response_count + result->dnsa6_nrr) *
                     sizeof(struct sockaddr *));
         if (new_responses == NULL) {
-            err("Failed to allocate memory for additional DNS responses");
+            LOGE("Failed to allocate memory for additional DNS responses");
         } else {
             cb_data->responses = new_responses;
 
             for (int i = 0; i < result->dnsa6_nrr; i++) {
-                struct sockaddr_in6 sa = {
-                    .sin6_family = AF_INET6,
-                    .sin6_port = cb_data->port,
-                    .sin6_addr = result->dnsa6_addr[i],
-                };
+                struct sockaddr_in6 *sa = (struct sockaddr_in6 *)malloc(sizeof(struct sockaddr_in6));
+                sa->sin6_family = AF_INET6;
+                sa->sin6_port = cb_data->port;
+                sa->sin6_addr = result->dnsa6_addr[i];
 
-                cb_data->responses[cb_data->response_count] =
-                        new_address_sa((struct sockaddr *)&sa, sizeof(sa));
+                cb_data->responses[cb_data->response_count] = (struct sockaddr *)sa;
                 if (cb_data->responses[cb_data->response_count] == NULL)
-                    err("Failed to allocate memory for DNS query result address");
+                    LOGE("Failed to allocate memory for DNS query result address");
                 else
                     cb_data->response_count++;
             }
@@ -290,7 +287,6 @@ dns_query_v6_cb(struct dns_ctx *ctx, struct dns_rr_a6 *result, void *data) {
 static void
 process_client_callback(struct ResolvQuery *cb_data) {
     struct sockaddr *best_address = NULL;
-    char buffer[128];
 
     if (resolv_mode == MODE_IPV4_FIRST)
         best_address = choose_ipv4_first(cb_data);
@@ -313,8 +309,7 @@ process_client_callback(struct ResolvQuery *cb_data) {
 static struct sockaddr *
 choose_ipv4_first(struct ResolvQuery *cb_data) {
     for (int i = 0; i < cb_data->response_count; i++)
-        if (address_is_sockaddr(cb_data->responses[i]) &&
-                address_sa(cb_data->responses[i])->sa_family == AF_INET)
+        if (cb_data->responses[i]->sa_family == AF_INET)
             return cb_data->responses[i];
 
     return choose_any(cb_data);;
@@ -323,8 +318,7 @@ choose_ipv4_first(struct ResolvQuery *cb_data) {
 static struct sockaddr *
 choose_ipv6_first(struct ResolvQuery *cb_data) {
     for (int i = 0; i < cb_data->response_count; i++)
-        if (address_is_sockaddr(cb_data->responses[i]) &&
-                address_sa(cb_data->responses[i])->sa_family == AF_INET6)
+        if (cb_data->responses[i]->sa_family == AF_INET6)
             return cb_data->responses[i];
 
     return choose_any(cb_data);;

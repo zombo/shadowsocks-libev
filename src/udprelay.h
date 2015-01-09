@@ -60,7 +60,7 @@ struct server_ctx {
 
 #ifdef UDPRELAY_REMOTE
 struct query_ctx {
-    asyncns_query_t *query;
+    struct ResolvQuery *query;
     struct sockaddr_storage src_addr;
     int buf_len;
     char *buf; // server send from, remote recv into

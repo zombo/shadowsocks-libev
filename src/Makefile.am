@@ -44,6 +44,7 @@ ss_server_SOURCES = utils.c \
                     encrypt.c \
 					udprelay.c \
 					cache.c \
+					resolv.c \
                     server.c
 
 ss_local_LDADD = $(SS_COMMON_LIBS)

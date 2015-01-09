@@ -370,7 +370,7 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         // get remote addr and port
         if (atyp == 1) {
             // IP V4
-            struct sockaddr_in *addr = (struct sockaddr_in)&storage;
+            struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
             size_t in_addr_len = sizeof(struct in_addr);
             addr->sin_family = AF_INET;
             if (r > in_addr_len) {
@@ -398,7 +398,7 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         } else if (atyp == 4) {
             // IP V6
-            struct sockaddr_in *addr = (struct sockaddr_in6)&storage;
+            struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&storage;
             size_t in6_addr_len = sizeof(struct in6_addr);
             addr->sin6_family = AF_INET6;
             if (r > in6_addr_len) {
@@ -468,7 +468,7 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         } else {
             server->stage = 4;
-            server->query = resolv_query(loop, host, server_recv_cb, NULL, server, port);
+            server->query = resolv_query(host, server_resolve_cb, NULL, server, port);
 
             ev_io_stop(EV_A_ & server_recv_ctx->io);
         }
@@ -550,8 +550,8 @@ static void server_timeout_cb(EV_P_ ev_timer *watcher, int revents)
 
 static void server_resolve_cb(struct sockaddr *addr, void *data)
 {
-    int err;
     struct server *server = (struct server*)data;
+    struct ev_loop *loop = server->listen_ctx->loop;
 
     server->query = NULL;
 
@@ -563,23 +563,20 @@ static void server_resolve_cb(struct sockaddr *addr, void *data)
         LOGE("unable to resolve.");
         close_and_free_server(EV_A_ server);
     } else {
-
         struct addrinfo info;
-        struct sockaddr_in *a = (struct sockaddr_in *)addr;
-
         info.ai_socktype = SOCK_STREAM;
         info.ai_protocol = IPPROTO_TCP;
         info.ai_addr = addr;
 
-        if (a.sa_family == AF_INET) {
+        if (addr->sa_family == AF_INET) {
             info.ai_family = AF_INET;
             info.ai_addrlen = sizeof(struct sockaddr_in);
-        } else if (a.sa_family == AF_INET6) {
+        } else if (addr->sa_family == AF_INET6) {
             info.ai_family = AF_INET6;
             info.ai_addrlen = sizeof(struct sockaddr_in6);
         }
 
-        struct remote *remote = connect_to_remote(info, server);
+        struct remote *remote = connect_to_remote(&info, server);
 
         if (remote == NULL) {
             LOGE("connect error.");
@@ -599,12 +596,9 @@ static void server_resolve_cb(struct sockaddr *addr, void *data)
             }
 
             // listen to remote connected event
-            ev_io_start(server->listen_ctx->loop, &remote->send_ctx->io);
+            ev_io_start(EV_A_ & remote->send_ctx->io);
         }
     }
-
-    // release addrinfo
-    asyncns_freeaddrinfo(result);
 }
 
 static void remote_recv_cb(EV_P_ ev_io *w, int revents)
@@ -950,7 +944,7 @@ int main(int argc, char **argv)
     const char *server_host[MAX_REMOTE_NUM];
     const char *server_port = NULL;
 
-    const char *nameservers[MAX_DNS_NUM];
+    char *nameservers[MAX_DNS_NUM];
     int nameserver_num = 1;
     nameservers[0] = "8.8.8.8";
 
@@ -1103,11 +1097,11 @@ int main(int argc, char **argv)
     resolv_init(loop, nameservers, NULL);
 
     // inilitialize listen context
-    struct listen_ctx listen_ctx_list[server_num + 1];
+    struct listen_ctx listen_ctx_list[server_num];
 
     // bind to each interface
     while (server_num > 0) {
-        int index = --server_num;
+        int index = server_num--;
         const char * host = server_host[index];
 
         // Bind to port
@@ -1138,8 +1132,8 @@ int main(int argc, char **argv)
     // Setup UDP
     if (udprelay) {
         LOGD("udprelay enabled.");
-        init_udprelay(server_host[0], server_port, dns_thread_num, m,
-                      listen_ctx->timeout, iface);
+        init_udprelay(server_host[0], server_port, m, atoi(timeout),
+                iface);
     }
 
     // setuid
@@ -1158,13 +1152,8 @@ int main(int argc, char **argv)
     }
 
     // Clean up
-    listen_ctx = &listen_ctx_list[0];
-    ev_io_stop(loop, &listen_ctx->io);
-    asyncns_free(listen_ctx->asyncns);
-    close(listen_ctx->fd);
-
-    for (int i = 1; i <= server_num; i++) {
-        listen_ctx = &listen_ctx_list[i];
+    for (int i = 0; i <= server_num; i++) {
+        struct listen_ctx *listen_ctx = &listen_ctx_list[i];
         ev_io_stop(loop, &listen_ctx->io);
         close(listen_ctx->fd);
     }
