@@ -29,7 +29,7 @@
 
 #include "encrypt.h"
 #include "jconf.h"
-#include "asyncns.h"
+#include "resolv.h"
 
 #include "common.h"
 
@@ -39,8 +39,7 @@ struct listen_ctx {
     int timeout;
     int method;
     char *iface;
-    asyncns_t *asyncns;
-    struct sockaddr sock;
+    struct ev_loop *loop;
 };
 
 struct server_ctx {
@@ -56,13 +55,15 @@ struct server {
     ssize_t buf_len;
     ssize_t buf_idx;
     char *buf; // server send from, remote recv into
-    asyncns_query_t *query;
     struct enc_ctx *e_ctx;
     struct enc_ctx *d_ctx;
     struct server_ctx *recv_ctx;
     struct server_ctx *send_ctx;
     struct listen_ctx *listen_ctx;
     struct remote *remote;
+
+    struct ResolvQuery *query;
+    struct sockaddr addr;
 
     struct cork_dllist_item entries;
 };

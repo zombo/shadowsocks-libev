@@ -225,7 +225,7 @@ AC_CONFIG_FILES([ shadowsocks-libev.pc
                  Makefile
                  libcork/Makefile
                  libipset/Makefile
-                 libasyncns/Makefile
+                 libudns/Makefile
                  libev/Makefile
                  src/Makefile])
 AC_OUTPUT
