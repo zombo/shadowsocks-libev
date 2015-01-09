@@ -30,7 +30,7 @@
 
 struct ResolvQuery;
 
-int resolv_init(struct ev_loop *, char **, char **);
+int resolv_init(struct ev_loop *, char **, int);
 struct ResolvQuery *resolv_query(const char *, void(*)(struct sockaddr *, void *), void (*)(void *), void *, uint16_t);
 void resolv_cancel(struct ResolvQuery *);
 void resolv_shutdown(struct ev_loop *);

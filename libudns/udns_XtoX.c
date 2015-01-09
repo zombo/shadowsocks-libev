@@ -28,12 +28,11 @@
 #endif
 #include "udns.h"
 
-#ifdef HAVE_INET_PTON_NTOP
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
+#ifdef HAVE_DECL_INET_NTOP
 const char *dns_ntop(int af, const void *src, char *dst, int size) {
   return inet_ntop(af, src, dst, size);
 }
@@ -41,7 +40,6 @@ const char *dns_ntop(int af, const void *src, char *dst, int size) {
 int dns_pton(int af, const char *src, void *dst) {
   return inet_pton(af, src, dst);
 }
-
 #else
 
 #define inet_XtoX_prefix udns_

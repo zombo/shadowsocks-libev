@@ -333,7 +333,7 @@ toolong:
   return namesiz >= DNS_MAXNAME ? -1 : 0;
 }
 
-#ifdef TEST
+#if 0
 #include <stdio.h>
 #include <stdlib.h>
 

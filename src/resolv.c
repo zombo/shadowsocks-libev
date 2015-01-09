@@ -73,7 +73,7 @@ static struct sockaddr *choose_ipv6_first(struct ResolvQuery *);
 static struct sockaddr *choose_any(struct ResolvQuery *);
 
 int
-resolv_init(struct ev_loop *loop, char **nameservers, char **search) {
+resolv_init(struct ev_loop *loop, char **nameservers, int nameserver_num) {
     resolv_mode = MODE_IPV4_FIRST;
 
     struct dns_ctx *ctx = &dns_defctx;
@@ -83,12 +83,10 @@ resolv_init(struct ev_loop *loop, char **nameservers, char **search) {
     } else {
         dns_reset(ctx);
 
-        for (char *server = *nameservers; server != NULL; server++)
+        for (int i = 0; i < nameserver_num; i++) {
+            char *server = nameservers[i];
             dns_add_serv(ctx, server);
-
-        if (search != NULL)
-            for (char *domain = *search; domain != NULL; domain++)
-                dns_add_srch(ctx, domain);
+        }
     }
 
     int sockfd = dns_open(ctx);

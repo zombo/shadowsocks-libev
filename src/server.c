@@ -944,7 +944,7 @@ int main(int argc, char **argv)
     const char *server_host[MAX_REMOTE_NUM];
     const char *server_port = NULL;
 
-    char *nameservers[MAX_DNS_NUM];
+    char* nameservers[MAX_DNS_NUM + 1];
     int nameserver_num = 1;
     nameservers[0] = "8.8.8.8";
 
@@ -991,7 +991,9 @@ int main(int argc, char **argv)
             iface = optarg;
             break;
         case 'd':
-            nameservers[nameserver_num++] = optarg;
+            if (nameserver_num < MAX_DNS_NUM) {
+                nameservers[nameserver_num++] = optarg;
+            }
             break;
         case 'a':
             user = optarg;
@@ -1094,14 +1096,14 @@ int main(int argc, char **argv)
     struct ev_loop *loop = EV_DEFAULT;
 
     // setup udns
-    resolv_init(loop, nameservers, NULL);
+    resolv_init(loop, nameservers, nameserver_num);
 
     // inilitialize listen context
     struct listen_ctx listen_ctx_list[server_num];
 
     // bind to each interface
     while (server_num > 0) {
-        int index = server_num--;
+        int index = --server_num;
         const char * host = server_host[index];
 
         // Bind to port
@@ -1116,7 +1118,7 @@ int main(int argc, char **argv)
         setnonblocking(listenfd);
         LOGD("server listening at port %s", server_port);
 
-        struct listen_ctx *listen_ctx = &listen_ctx_list[index + 1];
+        struct listen_ctx *listen_ctx = &listen_ctx_list[index];
 
         // Setup proxy context
         listen_ctx->timeout = atoi(timeout);
