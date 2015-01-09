@@ -79,10 +79,20 @@
 
 #define BUF_SIZE MAX_UDP_PACKET_SIZE
 
+static void server_recv_cb(EV_P_ ev_io *w, int revents);
+static void remote_recv_cb(EV_P_ ev_io *w, int revents);
+static void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents);
+static char *hash_key(const char *header, const int header_len,
+                      const struct sockaddr_storage *addr);
+#ifdef UDPRELAY_REMOTE
+static void query_resolve_cb(EV_P_ ev_io *w, int revents);
+#endif
+static void close_and_free_remote(EV_P_ struct remote_ctx *ctx);
+static struct remote_ctx * new_remote(int fd, struct server_ctx * server_ctx);
+
 extern int verbose;
 
 static struct server_ctx *server_ctx = NULL;
-struct resolve_ctx *resolve_ctx = NULL;
 
 #ifndef __MINGW32__
 static int setnonblocking(int fd)
@@ -139,7 +149,7 @@ static char *hash_key(const char *header, const int header_len,
 }
 
 static int parse_udprealy_header(const char * buf, const int buf_len,
-                                 char *host, char *port)
+                                 char *host, char *port, struct sockaddr_storage *storage)
 {
 
     const uint8_t atyp = *(uint8_t *)buf;
@@ -149,6 +159,12 @@ static int parse_udprealy_header(const char * buf, const int buf_len,
         // IP V4
         size_t in_addr_len = sizeof(struct in_addr);
         if (buf_len > in_addr_len) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)storage;
+            if (addr != NULL) {
+                addr->sin_family = AF_INET;
+                addr->sin_addr = *(struct in_addr *)(server->buf + offset);
+                addr->sin_port = *(uint16_t *)(server->buf + offset + in_addr_len);
+            }
             if (host != NULL) {
                 inet_ntop(AF_INET, (const void *)(buf + offset),
                           host, INET_ADDRSTRLEN);
@@ -168,6 +184,12 @@ static int parse_udprealy_header(const char * buf, const int buf_len,
         // IP V6
         size_t in6_addr_len = sizeof(struct in6_addr);
         if (buf_len > in6_addr_len) {
+            struct sockaddr_in6 *addr = (struct sockaddr_in *)storage;
+            if (addr != NULL) {
+                addr->sin6_family = AF_INET;
+                addr->sin6_addr = *(struct in_addr *)(server->buf + offset);
+                addr->sin6_port = *(uint16_t *)(server->buf + offset + in6_addr_len);
+            }
             if (host != NULL) {
                 inet_ntop(AF_INET6, (const void *)(buf + offset),
                           host, INET6_ADDRSTRLEN);
@@ -699,9 +721,11 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
 #else
     char host[256] = { 0 };
     char port[64] = { 0 };
+    struct sockaddr_storage storage;
+    bzero(&storage, sizeof(struct sockaddr_storage));
 
     int addr_header_len = parse_udprealy_header(buf + offset,
-                                                buf_len - offset, host, port);
+                                                buf_len - offset, host, port, &storage);
     if (addr_header_len == 0) {
         // error in parse header
         goto CLEAN_UP;
@@ -821,6 +845,8 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_DGRAM;
 
+        if (storage)
+
         query = asyncns_getaddrinfo(server_ctx->asyncns,
                                     host, port, &hints);
 
@@ -875,9 +901,6 @@ int init_udprelay(const char *server_host, const char *server_port,
                   const ss_addr_t tunnel_addr,
 #endif
 #endif
-#ifdef UDPRELAY_REMOTE
-                  int dns_thread_num,
-#endif
                   int method, int timeout, const char *iface)
 {
     // Inilitialize ev loop
@@ -889,22 +912,6 @@ int init_udprelay(const char *server_host, const char *server_port,
 
     //////////////////////////////////////////////////
     // Setup server context
-
-#ifdef UDPRELAY_REMOTE
-    // setup asyncns
-    asyncns_t *asyncns;
-    if (!(asyncns = asyncns_new(dns_thread_num))) {
-        FATAL("[udp] asyncns failed");
-    }
-    resolve_ctx = malloc(sizeof(struct resolve_ctx));
-
-    int asyncnsfd = asyncns_fd(asyncns);
-    ev_io_init(&resolve_ctx->io, query_resolve_cb, asyncnsfd, EV_READ);
-    ev_io_start(loop, &resolve_ctx->io);
-
-    resolve_ctx->asyncns = asyncns;
-    resolve_ctx->asyncnsfd = asyncnsfd;
-#endif
 
     // Bind to port
     int serverfd = create_server_socket(server_host, server_port);
@@ -925,9 +932,6 @@ int init_udprelay(const char *server_host, const char *server_port,
     server_ctx->tunnel_addr = tunnel_addr;
 #endif
 #endif
-#ifdef UDPRELAY_REMOTE
-    server_ctx->asyncns = asyncns;
-#endif
 
     ev_io_start(loop, &server_ctx->io);
 
@@ -940,11 +944,6 @@ void free_udprelay()
 #ifdef UDPRELAY_REMOTE
     if (resolve_ctx != NULL) {
         ev_io_stop(loop, &resolve_ctx->io);
-        asyncns_free(resolve_ctx->asyncns);
-
-        close(resolve_ctx->asyncnsfd);
-        free(resolve_ctx);
-        resolve_ctx = NULL;
     }
 #endif
     if (server_ctx != NULL) {

@@ -362,18 +362,19 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         int offset = 0;
         char atyp = server->buf[offset++];
         char host[256] = { 0 };
-        char port[64] = { 0 };
+        uint16_t port = 0;
         struct addrinfo info;
-        struct sockaddr_in addr;
+        struct sockaddr_storage storage;
+        bzero(&storage, sizeof(struct sockaddr_storage));
 
         // get remote addr and port
         if (atyp == 1) {
             // IP V4
+            struct sockaddr_in *addr = (struct sockaddr_in)&storage;
             size_t in_addr_len = sizeof(struct in_addr);
-            bzero(&addr, sizeof(struct sockaddr_in));
-            addr.sin_family = AF_INET;
+            addr->sin_family = AF_INET;
             if (r > in_addr_len) {
-                addr.sin_addr = *(struct in_addr *)(server->buf + offset);
+                addr->sin_addr = *(struct in_addr *)(server->buf + offset);
                 inet_ntop(AF_INET, (const void *)(server->buf + offset),
                           host, INET_ADDRSTRLEN);
                 offset += in_addr_len;
@@ -382,12 +383,12 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
                 return;
             }
-            addr.sin_port = *(uint16_t *)(server->buf + offset);
+            addr->sin_port = *(uint16_t *)(server->buf + offset);
             info.ai_family = AF_INET;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
             info.ai_addrlen = sizeof(struct sockaddr_in);
-            info.ai_addr = (struct sockaddr *)&addr;
+            info.ai_addr = (struct sockaddr *)addr;
         } else if (atyp == 3) {
             // Domain name
             uint8_t name_len = *(uint8_t *)(server->buf + offset);
@@ -397,12 +398,11 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         } else if (atyp == 4) {
             // IP V6
+            struct sockaddr_in *addr = (struct sockaddr_in6)&storage;
             size_t in6_addr_len = sizeof(struct in6_addr);
-            struct sockaddr_in6 addr;
-            bzero(&addr, sizeof(struct sockaddr_in6));
-            addr.sin6_family = AF_INET6;
+            addr->sin6_family = AF_INET6;
             if (r > in6_addr_len) {
-                addr.sin6_addr = *(struct in6_addr *)(server->buf + offset);
+                addr->sin6_addr = *(struct in6_addr *)(server->buf + offset);
                 inet_ntop(AF_INET6, (const void *)(server->buf + offset),
                           host, INET6_ADDRSTRLEN);
                 offset += in6_addr_len;
@@ -411,12 +411,12 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
                 return;
             }
-            addr.sin6_port = *(uint16_t *)(server->buf + offset);
+            addr->sin6_port = *(uint16_t *)(server->buf + offset);
             info.ai_family = AF_INET6;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
             info.ai_addrlen = sizeof(struct sockaddr_in6);
-            info.ai_addr = (struct sockaddr *)&addr;
+            info.ai_addr = (struct sockaddr *)addr;
         }
 
         if (offset == 1) {
@@ -425,13 +425,12 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
-        sprintf(port, "%d",
-                ntohs(*(uint16_t *)(server->buf + offset)));
+        port = (*(uint16_t *)(server->buf + offset));
 
         offset += 2;
 
         if (verbose) {
-            LOGD("connect to: %s:%s", host, port);
+            LOGD("connect to: %s:%d", host, ntohs(port));
         }
 
         // XXX: should handle buffer carefully
@@ -468,11 +467,8 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 ev_io_start(EV_A_ & remote->send_ctx->io);
             }
         } else {
-            ((struct sockaddr_in *)&server->addr)->sin_port =
-                *(uint16_t *)(server->buf + offset);
-
             server->stage = 4;
-            server->query = resolv_query(loop, host, server_recv_cb, NULL, server);
+            server->query = resolv_query(loop, host, server_recv_cb, NULL, server, port);
 
             ev_io_stop(EV_A_ & server_recv_ctx->io);
         }

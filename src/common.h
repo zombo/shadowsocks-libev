@@ -44,9 +44,6 @@ int init_udprelay(const char *server_host, const char *server_port,
                   const ss_addr_t tunnel_addr,
 #endif
 #endif
-#ifdef UDPRELAY_REMOTE
-                  int dns_thread_num,
-#endif
                   int method, int timeout, const char *iface);
 
 void free_udprelay(void);

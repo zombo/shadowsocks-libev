@@ -63,7 +63,6 @@ struct server {
     struct remote *remote;
 
     struct ResolvQuery *query;
-    struct sockaddr addr;
 
     struct cork_dllist_item entries;
 };

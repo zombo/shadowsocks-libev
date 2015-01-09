@@ -47,6 +47,7 @@ struct ResolvQuery {
     struct dns_query *queries[2];
     size_t response_count;
     struct sockaddr **responses;
+    uint16_t port;
 };
 
 
@@ -124,7 +125,7 @@ resolv_shutdown(struct ev_loop * loop) {
 
 struct ResolvQuery *
 resolv_query(const char *hostname, void (*client_cb)(struct sockaddr *, void *),
-        void (*client_free_cb)(void *), void *client_cb_data) {
+        void (*client_free_cb)(void *), void *client_cb_data, uint16_t port) {
     struct dns_ctx *ctx = (struct dns_ctx *)resolv_io_watcher.data;
 
     /*
@@ -141,6 +142,7 @@ resolv_query(const char *hostname, void (*client_cb)(struct sockaddr *, void *),
     memset(cb_data->queries, 0, sizeof(cb_data->queries));
     cb_data->response_count = 0;
     cb_data->responses = NULL;
+    cb_data->port = port;
 
     /* Submit A and AAAA queries */
     if (resolv_mode != MODE_IPV6_ONLY) {
@@ -220,7 +222,7 @@ dns_query_v4_cb(struct dns_ctx *ctx, struct dns_rr_a4 *result, void *data) {
             for (int i = 0; i < result->dnsa4_nrr; i++) {
                 struct sockaddr_in sa = {
                     .sin_family = AF_INET,
-                    .sin_port = 0,
+                    .sin_port = cb_data->port,
                     .sin_addr = result->dnsa4_addr[i],
                 };
 
@@ -260,7 +262,7 @@ dns_query_v6_cb(struct dns_ctx *ctx, struct dns_rr_a6 *result, void *data) {
             for (int i = 0; i < result->dnsa6_nrr; i++) {
                 struct sockaddr_in6 sa = {
                     .sin6_family = AF_INET6,
-                    .sin6_port = 0,
+                    .sin6_port = cb_data->port,
                     .sin6_addr = result->dnsa6_addr[i],
                 };
 
