@@ -371,8 +371,8 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             size_t in_addr_len = sizeof(struct in_addr);
             bzero(&addr, sizeof(struct sockaddr_in));
             addr.sin_family = AF_INET;
-            addr.sin_addr = *(struct in_addr *)(server->buf + offset);
             if (r > in_addr_len) {
+                addr.sin_addr = *(struct in_addr *)(server->buf + offset);
                 inet_ntop(AF_INET, (const void *)(server->buf + offset),
                           host, INET_ADDRSTRLEN);
                 offset += in_addr_len;
@@ -400,8 +400,8 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             struct sockaddr_in6 addr;
             bzero(&addr, sizeof(struct sockaddr_in6));
             addr.sin6_family = AF_INET6;
-            addr.sin6_addr = *(struct in6_addr *)(server->buf + offset);
             if (r > in6_addr_len) {
+                addr.sin6_addr = *(struct in6_addr *)(server->buf + offset);
                 inet_ntop(AF_INET6, (const void *)(server->buf + offset),
                           host, INET6_ADDRSTRLEN);
                 offset += in6_addr_len;
@@ -459,6 +459,8 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                     server->buf_len = 0;
                     server->buf_idx = 0;
                 }
+
+                server->stage = 4;
 
                 // listen to remote connected event
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
